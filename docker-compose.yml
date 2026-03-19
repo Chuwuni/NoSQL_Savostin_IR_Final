@@ -1,0 +1,137 @@
+services:
+  configsvr:
+    image: mongo:7
+    container_name: configsvr
+    command: ["mongod", "--configsvr", "--replSet", "cfgRS", "--port", "27019", "--bind_ip_all"]
+    volumes:
+      - configdb:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27019", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - backend
+
+  shard1:
+    image: mongo:7
+    container_name: shard1
+    command: ["mongod", "--shardsvr", "--replSet", "shard1RS", "--port", "27018", "--bind_ip_all"]
+    volumes:
+      - shard1db:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27018", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - backend
+
+  shard2:
+    image: mongo:7
+    container_name: shard2
+    command: ["mongod", "--shardsvr", "--replSet", "shard2RS", "--port", "27018", "--bind_ip_all"]
+    volumes:
+      - shard2db:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27018", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - backend
+
+  mongos:
+    image: mongo:7
+    container_name: mongos
+    command: ["mongos", "--configdb", "cfgRS/configsvr:27019", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27017:27017"
+    depends_on:
+      configsvr:
+        condition: service_healthy
+      shard1:
+        condition: service_healthy
+      shard2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks:
+      - backend
+
+  mongo-init:
+    build:
+      context: ./mongo-init
+      dockerfile: Dockerfile
+    container_name: mongo-init
+    depends_on:
+      configsvr:
+        condition: service_healthy
+      shard1:
+        condition: service_healthy
+      shard2:
+        condition: service_healthy
+      mongos:
+        condition: service_started
+    restart: "no"
+    networks:
+      - backend
+
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-05-24T17-08-30Z
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - backend
+
+  app:
+    build:
+      context: ./app
+    container_name: app
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
+    environment:
+      MONGO_URI: mongodb://mongos:27017
+      MONGO_DB: university
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: university-files
+    volumes:
+      - ./app:/app
+      - ./data:/data
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  configdb:
+  shard1db:
+  shard2db:
+  miniodata:
